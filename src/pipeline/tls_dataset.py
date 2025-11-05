@@ -27,9 +27,10 @@ if __name__ == "__main__":
     period_min = 0.5     # mínimo de período testado pelo TLS (em dias)
     period_max = 20.0  
     import multiprocessing
-    threads = multiprocessing.cpu_count()   # usa TODOS os núcleos do Colab
+    threads = 8   # força 8 threads mesmo que o Colab diga menos
+  # usa TODOS os núcleos do Colab
     
-    threads = multiprocessing.cpu_count()
+    
 
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
