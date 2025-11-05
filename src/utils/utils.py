@@ -1,4 +1,4 @@
-
+#APENAS PARA TESTES LOCAIS
 if __name__ == "__main__":
     
     from data_io import load_csv
