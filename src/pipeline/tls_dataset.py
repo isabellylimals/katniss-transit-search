@@ -24,9 +24,11 @@ if __name__ == "__main__":
 
     TEMPLATE_CSV = "./data/raw/koi_template.csv"
     OUTPUT_DIR = "./data/processed/"
-    period_min = 0.5
-    period_max = 20.0      
-    threads = 4
+    import multiprocessing
+    threads = multiprocessing.cpu_count()   # usa TODOS os núcleos do Colab
+    
+    threads = multiprocessing.cpu_count()
+
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
