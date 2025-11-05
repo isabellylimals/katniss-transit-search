@@ -42,8 +42,8 @@ if __name__ == "__main__":
     print("\nStarting dataset generation for AI...\n")
 
 
-    BATCH_SIZE = 10      # processar 10 KOIs por execução
-    MAX_KOIS = 60        # processar apenas 60 KOIs no total
+    BATCH_SIZE = 1     # processar 10 KOIs por execução
+    MAX_KOIS = 2   # processar apenas 60 KOIs no total
     CHECKPOINT_FILE = "./data/processed/checkpoint.txt"
 
     # Ler quantos já foram processados
