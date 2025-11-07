@@ -1,37 +1,31 @@
-"""
-COMPLETE PIPELINE TO GENERATE PLANETARY TRANSIT DATASET
- - Lightkurve (download + cleaning)
- - TransitLeastSquares (detection)
- - GLOBAL / LOCAL VIEW
- - Normalization
- - Save as .npy (for neural network)
-"""
-
-import multiprocessing
-import sys, os
+import sys, os, multiprocessing, warnings
 sys.path.append(os.path.abspath("."))
 
-
 if __name__ == "__main__":
-    import os
     import numpy as np
-    import lightkurve as lk
     import pandas as pd
+    import matplotlib.pyplot as plt
+    import lightkurve as lk
     from transitleastsquares import transitleastsquares as tls
     from src.utils.data_io import load_csv
+    from src.utils.pipeline_utils import extract_and_stack_transits
 
-    import matplotlib.pyplot as plt
+    warnings.filterwarnings("ignore", category=UserWarning)
 
-    TEMPLATE_CSV = "./data/raw/koi_template.csv"
-    OUTPUT_DIR = "./data/processed/"
-    period_min = 0.5     # mínimo de período testado pelo TLS (em dias)
-    period_max = 20.0  
-    import multiprocessing
-    threads = 8   # força 8 threads mesmo que o Colab diga menos
-  # usa TODOS os núcleos do Colab
-    
-    
+    TEMPLATE_CSV   = "./data/raw/koi_template.csv"
+    OUTPUT_DIR     = "./data/processed/"
+    META_PATH      = os.path.join(OUTPUT_DIR, "metadata.csv")
 
+    period_min     = 0.5
+    period_max     = 20.0
+    oversampling   = 2
+
+    env_threads = os.getenv("TLS_THREADS")
+    threads = int(env_threads) if env_threads and env_threads.isdigit() else min(multiprocessing.cpu_count(), 8)
+
+    BATCH_SIZE      = 1
+    MAX_KOIS        = 400
+    CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint.txt")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -40,89 +34,95 @@ if __name__ == "__main__":
 
     kic_column = next((c for c in df.columns if "kep" in c.lower()), None)
     if kic_column is None:
-        raise Exception("ERROR: Column with Kepler ID (kepid) not found in CSV.")
-
-    print("\nStarting dataset generation for AI...\n")
-
-
-    BATCH_SIZE = 1     # processar 10 KOIs por execução
-    MAX_KOIS = 2   # processar apenas 60 KOIs no total
-    CHECKPOINT_FILE = "./data/processed/checkpoint.txt"
-
-    # Ler quantos já foram processados
-   # máximo (reduz tempo de execução)
+        raise Exception("ERROR: Column with Kepler ID not found in CSV (expected 'kepid').")
 
     if os.path.exists(CHECKPOINT_FILE):
         with open(CHECKPOINT_FILE, "r") as f:
-            start_index = int(f.read().strip())
+            start_index = int((f.read() or "0").strip())
     else:
         start_index = 0
 
     end_index = min(start_index + BATCH_SIZE, MAX_KOIS)
-
+    print(f"\nStarting dataset generation...\n")
+    print(f"Threads: {threads} | Oversampling: {oversampling}")
     print(f"Processing KOIs {start_index+1} to {end_index} of {MAX_KOIS}")
 
-    # LOOP DOS KOIs (com checkpoint e blocos)
-    for index in range(start_index, end_index):
-        row = df.iloc[index]
+    def normalize_array(x: np.ndarray) -> np.ndarray:
+        if hasattr(x, "filled"):
+            x = x.filled(np.nan)
+        x = np.asarray(x, dtype=float)
+        m = np.nanmean(x)
+        s = np.nanstd(x)
+        return (x - m) / s if np.isfinite(s) and s > 0 else (x - m)
+
+    for idx in range(start_index, end_index):
+        row = df.iloc[idx]
         kic_id = int(row[kic_column])
+        koi_name = str(row["kepoi_name"]) if "kepoi_name" in row else str(kic_id)
+
+        print("\n" + "="*60)
+        print(f"Processing KIC {kic_id} ({idx+1}/{MAX_KOIS})")
+        print("="*60)
 
         try:
             search = lk.search_lightcurve(f"KIC {kic_id}", author="Kepler")
+            if len(search) == 0:
+                print("WARNING: No light curves found. Skipping.")
+                continue
+
             lc = search.download_all().stitch().remove_nans().remove_outliers()
             lc = lc.bin(time_bin_size=0.02)
-
-            print("Data loaded and cleaned!")
 
             model = tls(lc.time.value, lc.flux.value)
             results = model.power(period_min=period_min,
                                   period_max=period_max,
-                                  oversampling_factor=2,
+                                  oversampling_factor=oversampling,
                                   n_threads=threads)
 
-            print(f"Period: {results.period:.5f} days   |   SDE: {results.SDE:.2f}")
+            print(f"Period: {results.period:.5f} days | SDE: {results.SDE:.2f}")
 
             lc_folded = lc.fold(period=results.period, epoch_time=results.T0)
+            phase_global = np.asarray(lc_folded.time.value, dtype=float)
+            flux_global  = normalize_array(lc_folded.flux.value)
 
-            # NORMALIZAÇÃO (GLOBAL VIEW)
-            flux_global = (lc_folded.flux.value - np.mean(lc_folded.flux.value)) / np.std(lc_folded.flux.value)
-            np.save(f"{OUTPUT_DIR}/global_view_{kic_id}.npy", flux_global)
+            dur = float(results.duration) if hasattr(results, "duration") else results.period / 20.0
+            grid, stacked_local = extract_and_stack_transits(
+                lc, results.period, results.T0, dur, half_window_factor=2.0, n_samples=2001
+            )
 
-            # GLOBAL VIEW PNG
-            plt.figure(figsize=(10, 4))
-            plt.scatter(lc_folded.time.value, flux_global, s=3, color="black")
-            plt.xlabel("Phase (days)")
-            plt.ylabel("Flux (normalized)")
-            plt.title(f"Global View - KIC {kic_id}")
-            plt.savefig(f"{OUTPUT_DIR}/global_view_{kic_id}.png", dpi=300)
-            plt.close()
+            if stacked_local is None or np.all(np.isnan(stacked_local)) or stacked_local.size == 0:
+                print(f"WARNING: Empty or invalid stacked transit for KIC {kic_id}. Skipping.")
+                continue
 
-            # LOCAL VIEW NORMALIZACAO (zoom no trânsito)
-            mask = (lc_folded.time.value > -results.duration * 2) & (lc_folded.time.value < results.duration * 2)
-            flux_local = (lc_folded.flux.value[mask] - np.mean(lc_folded.flux.value[mask])) / np.std(lc_folded.flux.value[mask])
-            np.save(f"{OUTPUT_DIR}/local_view_{kic_id}.npy", flux_local)
+            npy_g = os.path.join(OUTPUT_DIR, f"global_view_{koi_name}.npy")
+            np.save(npy_g, flux_global)
 
-            plt.figure(figsize=(10, 4))
-            plt.scatter(lc_folded.time.value[mask], flux_local, s=5, color="red")
-            plt.xlabel("Phase (days)")
-            plt.ylabel("Flux (normalized)")
-            plt.title(f"Local View - KIC {kic_id}")
-            plt.savefig(f"{OUTPUT_DIR}/local_view_{kic_id}.png", dpi=300)
-            plt.close()
+            npy_l = os.path.join(OUTPUT_DIR, f"local_view_{koi_name}.npy")
+            np.save(npy_l, stacked_local)
 
-            print(f"Saved: GLOBAL + LOCAL VIEW for {kic_id}")
+            pd.DataFrame([{
+                "koi_name": koi_name,
+                "kepler_name": row.get("kepler_name", ""),
+                "kic_id": kic_id,
+                "period_days": results.period,
+                "SDE": results.SDE,
+                "odd_even_mismatch": getattr(results, "odd_even_mismatch", np.nan),
+                "duration_days": dur,
+                "global_npy": npy_g,
+                "local_npy": npy_l,
+            }]).to_csv(META_PATH, mode="a", header=not os.path.exists(META_PATH), index=False)
+
+            print(f"Saved GLOBAL + LOCAL dataset for KIC {kic_id}")
 
         except Exception as e:
             print(f"ERROR with KIC {kic_id}: {e}")
             continue
 
- 
     with open(CHECKPOINT_FILE, "w") as f:
         f.write(str(end_index))
 
-    print(f"Block finished. {end_index}/{MAX_KOIS} processed.")
-
+    print(f"\nBlock finished. {end_index}/{MAX_KOIS} processed.")
     if end_index >= MAX_KOIS:
-        print("\nFULL DATASET SUCCESSFULLY GENERATED!")
+        print("FULL DATASET GENERATED!")
     else:
-        print("Run the script again for the next block.")
+        print("Run the script again for next block.")

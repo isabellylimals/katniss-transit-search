@@ -8,6 +8,7 @@ def load_csv(file_path):
     )
 
     return df
+
     print(df.columns)
 
 
