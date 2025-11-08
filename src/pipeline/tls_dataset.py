@@ -11,7 +11,6 @@ if __name__ == "__main__":
     from src.utils.pipeline_utils import extract_and_stack_transits
 
     warnings.filterwarnings("ignore", category=UserWarning)
-    # MUDANÇA 1: Adicionado para suprimir os avisos de tempo de execução (RuntimeWarning)
     warnings.filterwarnings("ignore", category=RuntimeWarning)
 
     TEMPLATE_CSV    = "./data/raw/koi_template.csv"
@@ -26,7 +25,7 @@ if __name__ == "__main__":
     threads = int(env_threads) if env_threads and env_threads.isdigit() else min(multiprocessing.cpu_count(), 8)
 
     BATCH_SIZE      = 2
-    MAX_KOIS_CAP    = 400 # Renomeado de MAX_KOIS para clareza
+    MAX_KOIS_CAP    = 400
     CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint.txt")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -38,14 +37,14 @@ if __name__ == "__main__":
     if kic_column is None:
         raise Exception("ERROR: Column with Kepler ID not found in CSV (expected 'kepid').")
 
-    # MUDANÇA 2: Remover KICs duplicados para processar apenas estrelas únicas
+
     original_count = len(df)
     df.drop_duplicates(subset=[kic_column], keep="first", inplace=True)
-    df.reset_index(drop=True, inplace=True) # Redefinir o índice é crucial para .iloc[idx] funcionar
+    df.reset_index(drop=True, inplace=True) 
     new_count = len(df)
     print(f"Loaded {original_count} rows, found {new_count} unique KICs.")
     
-    # Agora, a lógica de processamento usará o total de KICs únicos
+
     TOTAL_STARS = min(MAX_KOIS_CAP, new_count)
 
     if os.path.exists(CHECKPOINT_FILE):
@@ -57,7 +56,7 @@ if __name__ == "__main__":
     end_index = min(start_index + BATCH_SIZE, TOTAL_STARS)
     print(f"\nStarting dataset generation...\n")
     print(f"Threads: {threads} | Oversampling: {oversampling}")
-    # A mensagem de log agora reflete o processamento de KICs únicos
+
     print(f"Processing KICs {start_index+1} to {end_index} of {TOTAL_STARS}")
 
     def normalize_array(x: np.ndarray) -> np.ndarray:
@@ -71,11 +70,11 @@ if __name__ == "__main__":
     for idx in range(start_index, end_index):
         row = df.iloc[idx]
         kic_id = int(row[kic_column])
-        # O koi_name agora será o primeiro KOI encontrado para aquele KIC
+
         koi_name = str(row["kepoi_name"]) if "kepoi_name" in row else str(kic_id)
 
         print("\n" + "="*60)
-        # A mensagem de log agora usa o total de KICs únicos
+        
         print(f"Processing KIC {kic_id} ({idx+1}/{TOTAL_STARS})")
         print("="*60)
 
@@ -131,7 +130,7 @@ if __name__ == "__main__":
                 stacked_local.size == 0 or
                 np.nanstd(stacked_local) < 0.01
             ):
-                print(f"WARNING: Curva local inválida ou muito plana para KIC {kic_id}. Skipping.")
+                print(f"WARNING: Invalid or very flat local curve for KIC {kic_id}. Skipping.")
                 continue
 
 
@@ -170,6 +169,6 @@ if __name__ == "__main__":
     if end_index >= TOTAL_STARS:
         print("FULL DATASET GENERATED!")
         if os.path.exists(CHECKPOINT_FILE):
-            os.remove(CHECKPOINT_FILE) # Limpa o checkpoint ao concluir
+            os.remove(CHECKPOINT_FILE) 
     else:
         print("Run the script again for next block.")
