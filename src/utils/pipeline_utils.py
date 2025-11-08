@@ -45,8 +45,6 @@ def extract_and_stack_transits(lc, period, t0, duration_days, half_window_factor
         else:
             f_local = f_local - np.nanmedian(f_local)
 
-        f_local = np.clip(f_local, -5, 5)  # Protege contra spikes extremos
-
         try:
             f_i = interp1d(t_local, f_local, bounds_error=False, fill_value=np.nan)(grid)
             stack.append(f_i)
@@ -57,7 +55,7 @@ def extract_and_stack_transits(lc, period, t0, duration_days, half_window_factor
         return grid, np.full_like(grid, np.nan)
 
     stack = np.vstack(stack)
-    stack = np.where(np.isnan(stack), np.nanmedian(stack, axis=0), stack)  # Corrige NaNs nas bordas
+    stack = np.where(np.isnan(stack), np.nanmedian(stack, axis=0), stack)
 
     stacked = np.nanmedian(stack, axis=0)
 
@@ -65,5 +63,11 @@ def extract_and_stack_transits(lc, period, t0, duration_days, half_window_factor
         stacked = stacked - np.nanmedian(stacked)
     else:
         stacked = (stacked - np.nanmedian(stacked)) / np.nanstd(stacked)
+
+    # Descartar curvas muito planas
+    if np.nanstd(stacked) < 0.01 or np.all(np.isnan(stacked)):
+        return grid, np.full_like(grid, np.nan)
+
+    stacked = np.clip(stacked, -5, 5)
 
     return grid, stacked
