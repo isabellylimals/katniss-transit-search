@@ -24,7 +24,7 @@ if __name__ == "__main__":
     env_threads = os.getenv("TLS_THREADS")
     threads = int(env_threads) if env_threads and env_threads.isdigit() else min(multiprocessing.cpu_count(), 8)
 
-    BATCH_SIZE      = 2
+    BATCH_SIZE      = 10
     MAX_KOIS_CAP    = 400
     CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint.txt")
 
@@ -114,6 +114,9 @@ if __name__ == "__main__":
 
 
             print(f"Period: {results.period:.5f} days | SDE: {results.SDE:.2f}")
+            if np.isnan(results.period):
+                print(f"WARNING: Invalid period (nan) found for KIC {kic_id}. Skipping.")
+                continue
 
             lc_folded = lc.fold(period=results.period, epoch_time=results.T0)
             phase_global = np.asarray(lc_folded.time.value, dtype=float)

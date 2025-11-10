@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-KIC = "K00753.01"
+KIC = "K00002.01"
 
 global_path = f"./data/processed/global_view_{KIC}.npy"
 local_path = f"./data/processed/local_view_{KIC}.npy"
