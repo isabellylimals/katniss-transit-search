@@ -1,14 +1,17 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
 KIC = "K00002.01"
 
 global_path = f"./data/processed/global_view_{KIC}.npy"
-local_path = f"./data/processed/local_view_{KIC}.npy"
+local_path  = f"./data/processed/local_view_{KIC}.npy"
+
+plots_dir = "./plots"
+os.makedirs(plots_dir, exist_ok=True)
 
 global_view = np.load(global_path, allow_pickle=True)
-
-local_view = np.load(local_path, allow_pickle=True)
+local_view  = np.load(local_path, allow_pickle=True)
 
 x_local = np.linspace(-1, 1, local_view.shape[0])
 
@@ -19,6 +22,11 @@ plt.xlabel("Sample index")
 plt.ylabel("Normalized flux")
 plt.grid()
 plt.tight_layout()
+
+global_out = os.path.join(plots_dir, f"global_view_{KIC}.png")
+plt.savefig(global_out, dpi=300, bbox_inches="tight")
+print(f"Global plot salvo em: {global_out}")
+
 plt.show()
 
 # -------- LOCAL VIEW --------
@@ -30,4 +38,9 @@ plt.xlabel("Approx phase (normalized)")
 plt.ylabel("Normalized flux (stacked)")
 plt.grid()
 plt.tight_layout()
+
+local_out = os.path.join(plots_dir, f"local_view_{KIC}.png")
+plt.savefig(local_out, dpi=300, bbox_inches="tight")
+print(f"✔ Local plot salvo em: {local_out}")
+
 plt.show()
