@@ -1,177 +1,200 @@
 import sys, os, multiprocessing, warnings
 sys.path.append(os.path.abspath("."))
 
-if __name__ == "__main__":
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
+CACHE_DIR = "./cache/lightcurves/"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+import numba
+import numpy as np
+
+@numba.njit(fastmath=True)
+def normalize_array_numba(x):
+    m = np.nanmean(x)
+    s = np.nanstd(x)
+    if s > 0:
+        return (x - m) / s
+    return x - m
+
+def download_lightcurve_cached(kic_id):
     import lightkurve as lk
+    import numpy as np
+
+    fname = os.path.join(CACHE_DIR, f"KIC_{kic_id}.npy")
+
+    if os.path.exists(fname):
+        try:
+            return np.load(fname, allow_pickle=True).item()
+        except:
+            pass  
+
+    search = lk.search_lightcurve(f"KIC {kic_id}", author="Kepler")
+    if len(search) == 0:
+        return None
+
+    lc = search.download_all().stitch().remove_nans().remove_outliers()
+    lc = lc.bin(time_bin_size=0.02)
+
+    np.save(fname, {"time": lc.time.value, "flux": lc.flux.value})
+    return {"time": lc.time.value, "flux": lc.flux.value}
+
+def process_single_kic(args):
+    (
+        idx,
+        row,
+        kic_column,
+        oversampling,
+        OUTPUT_DIR,
+        META_PATH,
+        period_min,
+        period_max
+    ) = args
+
+    import pandas as pd
     from transitleastsquares import transitleastsquares as tls
-    from src.utils.data_io import load_csv
     from src.utils.pipeline_utils import extract_and_stack_transits
 
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
+    kic_id = int(row[kic_column])
+    koi_name = str(row.get("kepoi_name", kic_id))
 
-    TEMPLATE_CSV    = "./data/raw/koi_template.csv"
-    OUTPUT_DIR      = "./data/processed/"
-    META_PATH       = os.path.join(OUTPUT_DIR, "metadata.csv")
+    print(f"[PID {os.getpid()}] Processing KIC {kic_id}...")
 
-    period_min      = 0.5
-    period_max      = 20.0
-    oversampling    = 2
+    cached = download_lightcurve_cached(kic_id)
+    if cached is None:
+        print(f"KIC {kic_id}: no data.")
+        return None
 
-    env_threads = os.getenv("TLS_THREADS")
-    threads = int(env_threads) if env_threads and env_threads.isdigit() else min(multiprocessing.cpu_count(), 8)
+    time = np.asarray(cached["time"], dtype=float)
+    flux = np.asarray(cached["flux"], dtype=float)
+    model = tls(time, flux)
 
-    BATCH_SIZE      = 10
-    MAX_KOIS_CAP    = 400
-    CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint.txt")
+    period_hint = row.get("period_days", np.nan)
+    if np.isfinite(period_hint):
+        period_window = 0.25 * period_hint
+        results = model.power(
+            period_min=max(0.5, period_hint - period_window),
+            period_max=period_hint + period_window,
+            oversampling_factor=oversampling,
+            n_threads=2
+        )
+    else:
+        results = model.power(
+            period_min=period_min,
+            period_max=period_max,
+            oversampling_factor=oversampling,
+            n_threads=2,
+        )
+
+    if np.isnan(results.period):
+        print(f"KIC {kic_id}: invalid period.")
+        return None
+
+    import lightkurve as lk
+
+    lc = lk.LightCurve(time=time, flux=flux)
+    lc_fold = lc.fold(period=results.period, epoch_time=results.T0)
+
+    phase_global = np.asarray(lc_fold.time.value, dtype=float)
+    flux_global = normalize_array_numba(np.asarray(lc_fold.flux.value, dtype=float))
+    dur = float(results.duration) if hasattr(results, "duration") else results.period / 20
+    grid, stacked_local = extract_and_stack_transits(
+        lc, results.period, results.T0, dur,
+        half_window_factor=2.0, n_samples=2001
+    )
+
+    if (
+        stacked_local is None
+        or np.all(np.isnan(stacked_local))
+        or stacked_local.size == 0
+        or np.nanstd(stacked_local) < 0.01
+    ):
+        print(f"KIC {kic_id}: invalid stacked transit.")
+        return None
+
+    npy_g = os.path.join(OUTPUT_DIR, f"global_view_{koi_name}.npy")
+    np.save(npy_g, flux_global)
+
+    npy_l = os.path.join(OUTPUT_DIR, f"local_view_{koi_name}.npy")
+    np.save(npy_l, stacked_local)
+
+    df_row = {
+        "koi_name": koi_name,
+        "kepler_name": row.get("kepler_name", ""),
+        "kic_id": kic_id,
+        "period_days": results.period,
+        "SDE": results.SDE,
+        "odd_even_mismatch": getattr(results, "odd_even_mismatch", np.nan),
+        "duration_days": dur,
+        "global_npy": npy_g,
+        "local_npy": npy_l,
+    }
+
+    return df_row
+
+if __name__ == "__main__":
+    import pandas as pd
+    from src.utils.data_io import load_csv
+
+    warnings.filterwarnings("ignore")
+
+    TEMPLATE_CSV = "./data/raw/koi_template.csv"
+    OUTPUT_DIR = "./data/processed/"
+    META_PATH = os.path.join(OUTPUT_DIR, "metadata.csv")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print("Reading catalog file (KOI/NASA)...")
     df = load_csv(TEMPLATE_CSV)
 
     kic_column = next((c for c in df.columns if "kep" in c.lower()), None)
     if kic_column is None:
-        raise Exception("ERROR: Column with Kepler ID not found in CSV (expected 'kepid').")
+        raise Exception("ERROR: Column with Kepler ID not found")
 
+    df.drop_duplicates(subset=[kic_column], inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
-    original_count = len(df)
-    df.drop_duplicates(subset=[kic_column], keep="first", inplace=True)
-    df.reset_index(drop=True, inplace=True) 
-    new_count = len(df)
-    print(f"Loaded {original_count} rows, found {new_count} unique KICs.")
-    
+    TOTAL_STARS = min(400, len(df))
+    BATCH_SIZE = 10
 
-    TOTAL_STARS = min(MAX_KOIS_CAP, new_count)
-
+    NUM_PROCESSES = max(1, multiprocessing.cpu_count() // 2)
+    CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint.txt")
     if os.path.exists(CHECKPOINT_FILE):
-        with open(CHECKPOINT_FILE, "r") as f:
-            start_index = int((f.read() or "0").strip())
+        start_index = int(open(CHECKPOINT_FILE).read().strip() or 0)
     else:
         start_index = 0
 
     end_index = min(start_index + BATCH_SIZE, TOTAL_STARS)
-    print(f"\nStarting dataset generation...\n")
-    print(f"Threads: {threads} | Oversampling: {oversampling}")
 
-    print(f"Processing KICs {start_index+1} to {end_index} of {TOTAL_STARS}")
+    print(f"\nProcessing KICs {start_index+1} to {end_index} of {TOTAL_STARS}")
+    print(f"Parallel processes: {NUM_PROCESSES}")
 
-    def normalize_array(x: np.ndarray) -> np.ndarray:
-        if hasattr(x, "filled"):
-            x = x.filled(np.nan)
-        x = np.asarray(x, dtype=float)
-        m = np.nanmean(x)
-        s = np.nanstd(x)
-        return (x - m) / s if np.isfinite(s) and s > 0 else (x - m)
-
+    tasks = []
     for idx in range(start_index, end_index):
-        row = df.iloc[idx]
-        kic_id = int(row[kic_column])
+        tasks.append((
+            idx,
+            df.iloc[idx],
+            kic_column,
+            2,             
+            OUTPUT_DIR,
+            META_PATH,
+            0.5,            
+            20.0            
+        ))
 
-        koi_name = str(row["kepoi_name"]) if "kepoi_name" in row else str(kic_id)
+    from concurrent.futures import ProcessPoolExecutor
 
-        print("\n" + "="*60)
-        
-        print(f"Processing KIC {kic_id} ({idx+1}/{TOTAL_STARS})")
-        print("="*60)
+    results = []
+    with ProcessPoolExecutor(max_workers=NUM_PROCESSES) as ex:
+        for out in ex.map(process_single_kic, tasks):
+            if out is not None:
+                results.append(out)
 
-        try:
-            search = lk.search_lightcurve(f"KIC {kic_id}", author="Kepler")
-            if len(search) == 0:
-                print("WARNING: No light curves found. Skipping.")
-                continue
-
-            lc = search.download_all().stitch().remove_nans().remove_outliers()
-            lc = lc.bin(time_bin_size=0.02)
-
-    
-            period_hint = row.get("period_days", np.nan)
-            if not np.isfinite(period_hint):
-                period_hint = None
-
-            model = tls(lc.time.value, lc.flux.value)
-
-            if period_hint:
-                print(f"→ Using KOI period hint: {period_hint:.4f} days")
-                period_window = 0.25 * period_hint   # ajustável
-                results = model.power(
-                    period_min=max(0.5, period_hint - period_window),
-                    period_max=period_hint + period_window,
-                    oversampling_factor=oversampling,
-                    n_threads=threads,
-                )
-            else:
-                print("→ No period hint found, using default TLS search range")
-                results = model.power(
-                    period_min=period_min,
-                    period_max=period_max,
-                    oversampling_factor=oversampling,
-                    n_threads=threads,
-                )
-
-
-            print(f"Period: {results.period:.5f} days | SDE: {results.SDE:.2f}")
-            if np.isnan(results.period):
-                print(f"WARNING: Invalid period (nan) found for KIC {kic_id}. Skipping.")
-                continue
-
-            lc_folded = lc.fold(period=results.period, epoch_time=results.T0)
-            phase_global = np.asarray(lc_folded.time.value, dtype=float)
-            flux_global  = normalize_array(lc_folded.flux.value)
-
-            dur = float(results.duration) if hasattr(results, "duration") else results.period / 20.0
-            grid, stacked_local = extract_and_stack_transits(
-                lc, results.period, results.T0, dur, half_window_factor=2.0, n_samples=2001
-            )
-            
-            if (
-                stacked_local is None or
-                np.all(np.isnan(stacked_local)) or
-                stacked_local.size == 0 or
-                np.nanstd(stacked_local) < 0.01
-            ):
-                print(f"WARNING: Invalid or very flat local curve for KIC {kic_id}. Skipping.")
-                continue
-
-
-            if stacked_local is None or np.all(np.isnan(stacked_local)) or stacked_local.size == 0:
-                print(f"WARNING: Empty or invalid stacked transit for KIC {kic_id}. Skipping.")
-                continue
-
-            npy_g = os.path.join(OUTPUT_DIR, f"global_view_{koi_name}.npy")
-            np.save(npy_g, flux_global)
-
-            npy_l = os.path.join(OUTPUT_DIR, f"local_view_{koi_name}.npy")
-            np.save(npy_l, stacked_local)
-
-            pd.DataFrame([{
-                "koi_name": koi_name,
-                "kepler_name": row.get("kepler_name", ""),
-                "kic_id": kic_id,
-                "period_days": results.period,
-                "SDE": results.SDE,
-                "odd_even_mismatch": getattr(results, "odd_even_mismatch", np.nan),
-                "duration_days": dur,
-                "global_npy": npy_g,
-                "local_npy": npy_l,
-            }]).to_csv(META_PATH, mode="a", header=not os.path.exists(META_PATH), index=False)
-
-            print(f"Saved GLOBAL + LOCAL dataset for KIC {kic_id}")
-
-        except Exception as e:
-            print(f"ERROR with KIC {kic_id}: {e}")
-            continue
+    if results:
+        pd.DataFrame(results).to_csv(
+            META_PATH, mode="a",
+            header=not os.path.exists(META_PATH),
+            index=False
+        )
 
     with open(CHECKPOINT_FILE, "w") as f:
         f.write(str(end_index))
 
-    print(f"\nBlock finished. {end_index}/{TOTAL_STARS} processed.")
-    if end_index >= TOTAL_STARS:
-        print("FULL DATASET GENERATED!")
-        if os.path.exists(CHECKPOINT_FILE):
-            os.remove(CHECKPOINT_FILE) 
-    else:
-        print("Run the script again for next block.")
+    print(f"\nCompleted block {end_index}/{TOTAL_STARS} processed.")

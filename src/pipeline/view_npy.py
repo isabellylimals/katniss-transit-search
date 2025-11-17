@@ -41,6 +41,6 @@ plt.tight_layout()
 
 local_out = os.path.join(plots_dir, f"local_view_{KIC}.png")
 plt.savefig(local_out, dpi=300, bbox_inches="tight")
-print(f"✔ Local plot salvo em: {local_out}")
+print(f"Local plot salvo em: {local_out}")
 
 plt.show()
