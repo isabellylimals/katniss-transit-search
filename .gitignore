@@ -81,3 +81,5 @@ docs/_build/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+exoplanet_model.pth

@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 import os
+from scipy.interpolate import interp1d
 
 class KeplerDataset(Dataset):
     def __init__(self, csv_file):
@@ -11,50 +12,45 @@ class KeplerDataset(Dataset):
     def __len__(self):
         return len(self.data_frame)
 
+    def resample_signal(self, signal, target_size):
+        if len(signal) == target_size:
+            return signal
+        x_old = np.linspace(0, 1, len(signal))
+        x_new = np.linspace(0, 1, target_size)
+        f = interp1d(x_old, signal, kind='linear', fill_value="extrapolate")
+        return f(x_new).astype(np.float32)
+
+    def normalize(self, signal):
+        std = np.std(signal)
+        if std > 0:
+            return (signal - np.mean(signal)) / std
+        return signal - np.mean(signal)
+
     def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
         row = self.data_frame.iloc[idx]
-
-        global_path = row["global_path"]
-        if not os.path.exists(global_path):
-            global_path = os.path.join(".", global_path)
+        
+        try:
+            g_view = np.load(row["global_path"]).astype(np.float32)
+            g_view = np.nan_to_num(g_view, nan=0.0, posinf=0.0, neginf=0.0)
+            g_view = self.resample_signal(g_view, 2001)
+            g_view = self.normalize(g_view)
+        except:
+            g_view = np.zeros(2001, dtype=np.float32)
 
         try:
-            global_view = np.load(global_path).astype(np.float32)
-            if np.isnan(global_view).any():
-                global_view = np.nan_to_num(global_view)
-        except Exception:
-            print(f"Warning: failed to load global view {global_path}, using zeros")
-            global_view = np.zeros(2001, dtype=np.float32)
+            l_view = np.load(row["local_path"]).astype(np.float32)
+            l_view = np.nan_to_num(l_view, nan=0.0, posinf=0.0, neginf=0.0)
+            l_view = self.resample_signal(l_view, 1001)
+            l_view = self.normalize(l_view)
+        except:
+            l_view = np.zeros(1001, dtype=np.float32)
 
-        local_path = row["local_path"]
-        if not os.path.exists(local_path):
-            local_path = os.path.join(".", local_path)
-
-        try:
-            local_view = np.load(local_path).astype(np.float32)
-            if np.isnan(local_view).any():
-                local_view = np.nan_to_num(local_view)
-        except Exception:
-            print(f"Warning: failed to load local view {local_path}, using zeros")
-            local_view = np.zeros(1001, dtype=np.float32)
-
-        aux_features = np.array(
-            [
-                row["sde"],
-                row["period"] / 100.0,
-                row["odd_even_mismatch"],
-            ],
-            dtype=np.float32,
-        )
-
+        aux = np.array([row["sde"], row["period"] / 100.0, row["odd_even_mismatch"]], dtype=np.float32)
         label = np.array([row["label"]], dtype=np.float32)
 
         return {
-            "global": torch.tensor(global_view).unsqueeze(0),
-            "local": torch.tensor(local_view).unsqueeze(0),
-            "aux": torch.tensor(aux_features),
+            "global": torch.tensor(g_view).unsqueeze(0),
+            "local": torch.tensor(l_view).unsqueeze(0),
+            "aux": torch.tensor(aux),
             "label": torch.tensor(label),
         }
