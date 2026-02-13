@@ -47,8 +47,11 @@ def train():
                 correct += (predicted == labels).sum().item()
 
         print(f"Epoch {epoch+1} | Loss: {r_loss/len(train_loader):.4f} | Acc: {100*correct/total:.2f}%")
+    
+    model_name = f"exoplanet_model_epoch{epoch+1}_acc{correct/total:.2f}.pth"
 
-    torch.save(model.state_dict(), "exoplanet_model.pth")
+    torch.save(model.state_dict(), model_name)
+    print(f"Modelo salvo como {model_name}")
 
 if __name__ == "__main__":
     train()
