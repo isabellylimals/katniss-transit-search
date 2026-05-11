@@ -61,6 +61,7 @@ data/raw/
 data/processed/
 models/
 notebooks/
+training/
 # --- Arquivos numpy e pandas ---
 *.npy
 *.npz
