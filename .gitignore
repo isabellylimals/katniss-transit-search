@@ -61,7 +61,9 @@ data/raw/
 data/processed/
 models/
 notebooks/
-training/
+
+src/training/
+src/pipeline/generate_dataset_final.py
 # --- Arquivos numpy e pandas ---
 *.npy
 *.npz
