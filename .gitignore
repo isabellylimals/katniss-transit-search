@@ -62,6 +62,8 @@ data/processed/
 models/
 notebooks/
 
+
+src/pipeline/generate_dataset_final.py
 .tmp.driveupload/
 # --- Arquivos numpy e pandas ---
 *.npy
