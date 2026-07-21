@@ -62,7 +62,7 @@ data/processed/
 models/
 notebooks/
 
-src/training/
+
 src/pipeline/generate_dataset_final.py
 # --- Arquivos numpy e pandas ---
 *.npy
