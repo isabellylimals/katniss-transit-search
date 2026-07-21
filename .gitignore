@@ -62,7 +62,7 @@ data/processed/
 models/
 notebooks/
 
-
+.tmp.driveupload/
 # --- Arquivos numpy e pandas ---
 *.npy
 *.npz
